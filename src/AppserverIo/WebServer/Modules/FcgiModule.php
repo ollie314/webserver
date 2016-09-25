@@ -1,7 +1,7 @@
 <?php
 
 /**
- * \AppserverIo\WebServer\Modules\FastCgiModule
+ * \AppserverIo\WebServer\Modules\FcgiModule
  *
  * NOTICE OF LICENSE
  *
@@ -20,18 +20,25 @@
 
 namespace AppserverIo\WebServer\Modules;
 
+use React\Promise as promise;
+use React\EventLoop\LoopInterface;
+use Crunch\FastCGI\Client\Client;
+use Crunch\FastCGI\Protocol\RequestParameters;
+use Crunch\FastCGI\Client\Factory as FcgiClientFactory;
+use React\EventLoop\Factory as EventLoopFactory;
+use React\Dns\Resolver\Factory as DnsResolverFactory;
+use React\SocketClient\Connector as SocketConnector;
 use AppserverIo\Psr\HttpMessage\Protocol;
 use AppserverIo\Psr\HttpMessage\RequestInterface;
 use AppserverIo\Psr\HttpMessage\ResponseInterface;
 use AppserverIo\WebServer\Interfaces\HttpModuleInterface;
 use AppserverIo\Http\HttpResponseStates;
 use AppserverIo\Server\Dictionaries\ServerVars;
-use AppserverIo\Server\Dictionaries\ModuleVars;
 use AppserverIo\Server\Dictionaries\ModuleHooks;
-use AppserverIo\Server\Exceptions\ModuleException;
 use AppserverIo\Server\Interfaces\RequestContextInterface;
 use AppserverIo\Server\Interfaces\ServerContextInterface;
-use Crunch\FastCGI\Client as FastCgiClient;
+use AppserverIo\Server\Dictionaries\ModuleVars;
+use AppserverIo\Server\Exceptions\ModuleException;
 
 /**
  * Class FastCgiModule
@@ -45,7 +52,7 @@ use Crunch\FastCGI\Client as FastCgiClient;
  * @link      https://github.com/appserver-io/webserver
  * @link      http://www.appserver.io/
  */
-class FastCgiModule implements HttpModuleInterface
+class FcgiModule implements HttpModuleInterface
 {
 
     /**
@@ -56,11 +63,39 @@ class FastCgiModule implements HttpModuleInterface
     const DEFAULT_FAST_CGI_IP = '127.0.0.1';
 
     /**
+     * The default DNS server for DNS resolution.
+     *
+     * @var string
+     */
+    const DEFAULT_DNS_SERVER = '0.0.0.0';
+
+    /**
      * The default port for the Fast-CGI connection.
      *
      * @var integer
      */
     const DEFAULT_FAST_CGI_PORT = 9010;
+
+    /**
+     * The param key for the FastCGI server host name.
+     *
+     * @var string
+     */
+    const PARAM_HOST = 'host';
+
+    /**
+     * The param key for the FastCGI server port.
+     *
+     * @var string
+     */
+    const PARAM_PORT = 'port';
+
+    /**
+     * The param key for the DNS server used to resolve the DNS server name.
+     *
+     * @var string
+     */
+    const PARAM_DNS_SERVER = 'dnsServer';
 
     /**
      * Defines the module name.
@@ -103,90 +138,57 @@ class FastCgiModule implements HttpModuleInterface
             }
 
             // check if file does not exist
-            if (! $requestContext->hasServerVar(ServerVars::SCRIPT_FILENAME)) {
+            if ($requestContext->hasServerVar(ServerVars::SCRIPT_FILENAME) === false) {
                 $response->setStatusCode(404);
                 throw new ModuleException(null, 404);
             }
 
-            // create a new the FastCGI client/connection
-            $fastCgiConnection = $this->getFastCgiClient($requestContext)->connect();
+            // initialize the event loop
+            $loop = EventLoopFactory::create();
 
-            // prepare the Fast-CGI environment variables
-            $environment = $this->prepareEnvironment($request, $requestContext);
+            // invoke the FastCGI request
+            $this->getFastCgiClient($requestContext, $loop)->done(function (Client $client) use ($request, $requestContext, $response) {
+                // initialize the environment
+                $env = $this->prepareEnvironment($request, $requestContext);
 
-            // rewind the body stream
-            $bodyStream = $request->getBodyStream();
-            rewind($bodyStream);
+                // initialize the request
+                $req = $client->newRequest(
+                    new RequestParameters($env),
+                    new \Crunch\FastCGI\ReaderWriter\StringReader($request->getBodyContent())
+                );
 
-            // initialize a new FastCGI request instance
-            $fastCgiRequest = $fastCgiConnection->newRequest($environment, $bodyStream);
+                // initialize the response handler
+                $responseHandler = function ($res) use ($response) {
+                    // explode status code, headers and body from the FastCGI response
+                    list ($statusCode, $headers, $body) = $this->formatResponse($res->getContent()->read());
+                    // initialize the HTTP response with the values
+                    $response->setHeaders($headers);
+                    $response->appendBodyStream($body);
+                    $response->setStatusCode($statusCode);
+                };
 
-            // process the request
-            $rawResponse = $fastCgiConnection->request($fastCgiRequest);
+                // finally send the FastCGI request
+                $x = $client->sendRequest($req)->then($responseHandler);
 
-            // format the raw response
-            $fastCgiResponse = $this->formatResponse($rawResponse->content);
+                // close the FastCGI connection
+                promise\all([$x])->then(function () use ($client) {
+                    $client->close();
+                });
+            });
 
-            // set the Fast-CGI response value in the WebServer response
-            $response->setStatusCode($fastCgiResponse['statusCode']);
-            $response->appendBodyStream($fastCgiResponse['body']);
-
-            // set the headers found in the Fast-CGI response
-            if (array_key_exists('headers', $fastCgiResponse)) {
-                foreach ($fastCgiResponse['headers'] as $headerName => $headerValue) {
-                    // if found an array, e. g. for the Set-Cookie header, we add each value
-                    if (is_array($headerValue)) {
-                        foreach ($headerValue as $value) {
-                            $response->addHeader($headerName, $value, true);
-                        }
-                    } else {
-                        $response->addHeader($headerName, $headerValue);
-                    }
-                }
-            }
+            // start the event loop
+            $loop->run();
 
             // add the X-Powered-By header
             $response->addHeader(Protocol::HEADER_X_POWERED_BY, __CLASS__);
 
             // set response state to be dispatched after this without calling other modules process
             $response->setState(HttpResponseStates::DISPATCH);
+
         } catch (\Exception $e) {
             // catch all exceptions
             throw new ModuleException($e->getMessage(), $e->getCode());
         }
-    }
-
-    /**
-     * Creates and returns a new FastCGI client instance.
-     *
-     * @param \AppserverIo\Server\Interfaces\RequestContextInterface $requestContext A requests context instance
-     *
-     * @return \Crunch\FastCGI\Connection The FastCGI connection instance
-     */
-    protected function getFastCgiClient(RequestContextInterface $requestContext)
-    {
-
-        // initialize default host/port
-        $host = FastCgiModule::DEFAULT_FAST_CGI_IP;
-        $port = FastCgiModule::DEFAULT_FAST_CGI_PORT;
-
-        // set the connection data to be used for the Fast-CGI connection
-        $fileHandlerVariables = array();
-
-        // check if we've configured module variables
-        if ($requestContext->hasModuleVar(ModuleVars::VOLATILE_FILE_HANDLER_VARIABLES)) {
-            // load the volatile file handler variables and set connection data
-            $fileHandlerVariables = $requestContext->getModuleVar(ModuleVars::VOLATILE_FILE_HANDLER_VARIABLES);
-            if (isset($fileHandlerVariables['host'])) {
-                $host = $fileHandlerVariables['host'];
-            }
-            if (isset($fileHandlerVariables['port'])) {
-                $port = $fileHandlerVariables['port'];
-            }
-        }
-
-        // create and return the FastCGI client
-        return new FastCgiClient($host, $port);
     }
 
     /**
@@ -333,10 +335,56 @@ class FastCgiModule implements HttpModuleInterface
 
         // return the array with the response
         return array(
-            'statusCode' => (int) $code,
-            'headers' => $header,
-            'body' => $rawBody
+            (int) $code,
+            $header,
+            $rawBody
         );
+    }
+
+    /**
+     * Creates and returns a new FastCGI client instance.
+     *
+     * @param \AppserverIo\Server\Interfaces\RequestContextInterface $requestContext A requests context instance
+     * @param \React\EventLoop\LoopInterface                         $loop           The event loop instance
+     *
+     * @return \Crunch\FastCGI\Connection The FastCGI connection instance
+     */
+    protected function getFastCgiClient(RequestContextInterface $requestContext, LoopInterface $loop)
+    {
+
+        // initialize default host/port/DNS server
+        $host = FcgiModule::DEFAULT_FAST_CGI_IP;
+        $port = FcgiModule::DEFAULT_FAST_CGI_PORT;
+        $dnsServer = FcgiModule::DEFAULT_DNS_SERVER;
+
+        // set the connection data to be used for the Fast-CGI connection
+        $fileHandlerVariables = array();
+
+        // check if we've configured module variables
+        if ($requestContext->hasModuleVar(ModuleVars::VOLATILE_FILE_HANDLER_VARIABLES)) {
+            // load the volatile file handler variables and set connection data
+            $fileHandlerVariables = $requestContext->getModuleVar(ModuleVars::VOLATILE_FILE_HANDLER_VARIABLES);
+            if (isset($fileHandlerVariables[FcgiModule::PARAM_HOST])) {
+                $host = $fileHandlerVariables[FcgiModule::PARAM_HOST];
+            }
+            if (isset($fileHandlerVariables[FcgiModule::PARAM_PORT])) {
+                $port = $fileHandlerVariables[FcgiModule::PARAM_PORT];
+            }
+            if (isset($fileHandlerVariables[FcgiModule::PARAM_DNS_SERVER])) {
+                $dnsServer = $fileHandlerVariables[FcgiModule::PARAM_DNS_SERVER];
+            }
+        }
+
+        // initialize the socket connector with the DNS resolver
+        $dnsResolverFactory = new DnsResolverFactory();
+        $dns = $dnsResolverFactory->createCached($dnsServer, $loop);
+
+        // initialize the FastCGI factory with the connector
+        $connector = new SocketConnector($loop, $dns);
+        $factory = new FcgiClientFactory($loop, $connector);
+
+        // initialize the FastCGI client with the FastCGI server IP and port
+        return $factory->createClient($host, $port);
     }
 
     /**

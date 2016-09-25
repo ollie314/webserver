@@ -1,3 +1,137 @@
+# Version 5.1.0
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Add new FcgiModule using original CrunchPHP/fastcgi library
+
+# Version 5.0.4
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Add Dockerfile configuration
+
+# Version 5.0.3
+
+## Bugfixes
+
+* Make MagentoRewriteMapper more generic and make it work with Magento 2
+
+## Features
+
+* None
+
+# Version 5.0.2
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Switch from bash to Composer bin script
+* Switch to latest appserver-io/server version 10.0.0
+
+# Version 5.0.1
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Remove monolog as it has been replaced with appserver-io/logger
+
+# Version 5.0.0
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Remove deprecated PhpModule and related classes
+* Remove dependency to appserver-io-php/appserver PECL extension 
+* Make webserver ready for PHP 7 by switching to appserver-io/server version 9.0.0
+
+# Version 4.0.9
+
+## Bugfixes
+
+* Fixed error in FastCgiModule when splitting response header and body
+
+## Features
+
+* None
+
+# Version 4.0.8
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Extended module test suite with core module tests
+* Extended configuration evaluation in access module
+
+# Version 4.0.7
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Switched to appserver-io/server version 8.x to make use of ciphers SSL configuration option
+
+# Version 4.0.6
+
+## Bugfixes
+
+* None
+
+## Features
+
+* Switched to appserver-io/server version 7.x to make use of multiple SSL configuration options
+
+# Version 4.0.5
+
+## Bugfixes
+
+* Fixed missing use statement for HttpException and remove trailing \ from ModuleException
+
+## Features
+
+* None
+
+# Version 4.0.4
+
+## Bugfixes
+
+* Fix for trying to load server var SERVER_AUTO_INDEX when server configuration param autoIndex is missing
+
+## Features
+
+* None
+
+# Version 4.0.3
+
+## Bugfixes
+
+* Update JSON configuration to support new module params
+
+## Features
+
+* None
+
 # Version 4.0.2
 
 ## Bugfixes
